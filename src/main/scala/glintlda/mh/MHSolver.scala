@@ -3,7 +3,7 @@ package glintlda.mh
 import breeze.linalg.Vector
 import glint.iterators.RowBlockIterator
 import glint.models.client.buffered.BufferedBigMatrix
-import glintlda.util.{FastRNG, SimpleLock, time}
+import glintlda.util.{AggregateBuffer, FastRNG, SimpleLock, time}
 import glintlda.{GibbsSample, Solver, LDAModel}
 
 import scala.concurrent.Await
@@ -113,6 +113,7 @@ class MHSolver(model: LDAModel, id: Int) extends Solver(model, id) {
                end: Int) = {
 
     // Create buffer
+    val aggregateBuffer = new AggregateBuffer(model.config.powerlawCutoff, model.config)
     val bufferGlobal = new Array[Long](model.config.topics)
     val buffer = new BufferedBigMatrix[Long](model.wordTopicCounts, bufferSize)
 
@@ -153,11 +154,16 @@ class MHSolver(model: LDAModel, id: Int) extends Solver(model, id) {
             sampler.documentCounts(oldTopic) -= 1
             sampler.documentCounts(newTopic) += 1
 
-            // Add to buffer and flush if necessary
-            buffer.pushToBuffer(feature, oldTopic, -1)
-            flushBufferIfFull(buffer, lock)
-            buffer.pushToBuffer(feature, newTopic, 1)
-            flushBufferIfFull(buffer, lock)
+            if (feature < aggregateBuffer.cutoff) {
+              aggregateBuffer.add(feature, newTopic, 1)
+              aggregateBuffer.add(feature, oldTopic, -1)
+            } else {
+              // Add to buffer and flush if necessary
+              buffer.pushToBuffer(feature, oldTopic, -1)
+              flushBufferIfFull(buffer, lock)
+              buffer.pushToBuffer(feature, newTopic, 1)
+              flushBufferIfFull(buffer, lock)
+            }
 
             bufferGlobal(oldTopic) -= 1
             bufferGlobal(newTopic) += 1
@@ -168,6 +174,10 @@ class MHSolver(model: LDAModel, id: Int) extends Solver(model, id) {
       }
       i += 1
     }
+
+    // Flush powerlaw buffer
+    lock.acquire()
+    aggregateBuffer.flush(model.wordTopicCounts).onComplete(_ => lock.release())
 
     // Flush buffer to push changes to word topic counts
     flushBuffer(buffer, lock)

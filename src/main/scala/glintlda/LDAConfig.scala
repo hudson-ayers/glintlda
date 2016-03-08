@@ -19,8 +19,11 @@ case class LDAConfig(var α: Double = 0.5,
                      var iterations: Int = 100,
                      var topics: Int = 10,
                      var vocabularyTerms: Int = 100000,
+                     var powerlawCutoff: Int = 0,
                      var partitions: Int = 240,
                      var blockSize: Int = 1000,
+                     var checkpointRead: String = "",
+                     var checkpointSave: String = "",
                      var seed: Int = 42) {
 
   def setα(α: Double) = this.α = α
@@ -30,8 +33,11 @@ case class LDAConfig(var α: Double = 0.5,
   def setIterations(iterations: Int) = this.iterations = iterations
   def setTopics(topics: Int) = this.topics = topics
   def setVocabularyTerms(vocabularyTerms: Int) = this.vocabularyTerms = vocabularyTerms
+  def setPowerlawCutoff(powerlawCutoff: Int) = this.powerlawCutoff = powerlawCutoff
   def setPartitions(partitions: Int) = this.partitions = partitions
   def setBlockSize(blockSize: Int) = this.blockSize = blockSize
+  def setCheckpointSave(checkpointSave: String) = this.checkpointSave = checkpointSave
+  def setCheckpointRead(checkpointRead: String) = this.checkpointRead = checkpointRead
   def setSeed(seed: Int) = this.seed = seed
 
   override def toString: String = {
@@ -43,8 +49,11 @@ case class LDAConfig(var α: Double = 0.5,
        |  iterations = $iterations
        |  topics = $topics
        |  vocabularyTerms = $vocabularyTerms
+       |  powerlawCutoff = $powerlawCutoff
        |  partitions = $partitions
        |  blockSize = $blockSize
+       |  checkpointSave = $checkpointSave
+       |  checkpointRead = $checkpointRead
        |  seed = $seed
        |}
     """.stripMargin

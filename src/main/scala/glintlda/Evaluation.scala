@@ -130,7 +130,7 @@ class Evaluation(config: LDAConfig) extends Serializable {
 
     // Print to log
     val logger = Logger(LoggerFactory getLogger s"${getClass.getSimpleName}")
-    logger.info(s"Evaluation after iteration ${iteration + 1}")
+    logger.info(s"Evaluation after iteration ${iteration}")
     logger.info(s"Doc log-likelihood:  ${docLoglikelihood}")
     logger.info(s"Word log-likelihood: ${wordLoglikelihood}")
     logger.info(s"Norm log-likelihood: ${loglikelihood}")

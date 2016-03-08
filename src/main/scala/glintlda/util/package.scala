@@ -4,7 +4,7 @@ import java.net.URI
 
 import com.typesafe.scalalogging.slf4j.Logger
 import org.apache.hadoop.fs.{FileSystem, Path}
-import org.apache.spark.SparkContext
+import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
 import spire.implicits.cfor
 
@@ -161,6 +161,20 @@ package object util {
     val elapsed = System.currentTimeMillis() - start
     logger.info(s"${pre}${elapsed}ms")
     result
+  }
+
+  /**
+    * Registers the kryo classes necessary to run the algorithm with kryo serialization in spark
+    *
+    * @param conf The spark configuration
+    */
+  def registerKryo(conf: SparkConf): Unit = {
+    conf.registerKryoClasses(Array(
+      classOf[LDAModel],
+      classOf[LDAConfig],
+      classOf[GibbsSample],
+      classOf[Evaluation]
+    ))
   }
 
 }
