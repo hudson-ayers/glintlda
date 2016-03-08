@@ -1,6 +1,9 @@
 package glintlda
 
+import java.io.{PrintWriter, BufferedWriter, File}
+
 import akka.util.Timeout
+import breeze.io.TextWriter.FileWriter
 import glint.Client
 import glint.iterators.RowBlockIterator
 import glint.models.client.granular.GranularBigMatrix
@@ -56,6 +59,43 @@ class LDAModel(var wordTopicCounts: BigMatrix[Long],
     topWords.map {
       case bpq => bpq.iterator.toList.sorted.reverse.map { case (prob, f) => (f, prob) }
     }
+  }
+
+  /**
+    * Writes the topic model to given file
+    *
+    * @param file The file
+    * @param ec The execution context in which to execute requests to the parameter server
+    * @param timeout The timeout of operations to the parameter server
+    */
+  def writeToFile(file: File)(implicit ec: ExecutionContext, timeout: Timeout): Unit = {
+
+    // Get global counts
+    val globalCounts = Await.result(topicCounts.pull((0L until config.topics).toArray), timeout.duration)
+    val writer = new PrintWriter(file)
+
+    // Iterate over blocks of rows and add entries to the bounded priority queue
+    var start = 0L
+    new RowBlockIterator[Long](wordTopicCounts, 10000).foreach {
+      case rowBlock =>
+        var i = 0
+        while (i < rowBlock.length) {
+          writer.print(s"${start + i}")
+          val row = rowBlock(i)
+          var topic = 0
+          while (topic < config.topics) {
+            val probability = (config.β + row(topic).toDouble) / (config.vocabularyTerms * config.β + globalCounts(topic).toDouble)
+            writer.print(s" $probability")
+            topic += 1
+          }
+          writer.println()
+          i += 1
+        }
+        start += rowBlock.length
+    }
+
+    // Close file
+    writer.close()
   }
 
 }
