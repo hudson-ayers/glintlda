@@ -36,7 +36,6 @@ class Evaluation(config: LDAConfig) extends Serializable {
     val sparseCounts = sample.sparseCounts(config.topics)
     var offset = 0
     while( offset < sparseCounts.activeSize) {
-      val index: Int = sparseCounts.indexAt(offset)
       val value: Int = sparseCounts.valueAt(offset)
       localDocLikelihood += lgamma(config.α + value)
       offset += 1
@@ -93,6 +92,16 @@ class Evaluation(config: LDAConfig) extends Serializable {
         start += rowBlock.length
     }
 
+    // Normalize
+    wordLikelihood += config.topics * lgamma(config.vocabularyTerms * config.β)
+    wordLikelihood -= config.topics * config.vocabularyTerms * lgamma(config.β)
+    val global = Await.result(model.topicCounts.pull((0L until config.topics).toArray), timeout.duration)
+    var i = 0
+    while (i < global.length) {
+      wordLikelihood -= lgamma(config.vocabularyTerms * config.β + global(i).toDouble)
+      i += 1
+    }
+
     // Return result
     wordLikelihood
   }
@@ -113,17 +122,7 @@ class Evaluation(config: LDAConfig) extends Serializable {
 
     // Get the independently computed log likelihood numbers
     val wordLoglikelihood = computeWordLoglikelihood(model)
-    var loglikelihood = docLoglikelihood + wordLoglikelihood
-
-    // Normalize
-    loglikelihood += config.topics * lgamma(config.vocabularyTerms * config.β)
-    loglikelihood -= config.topics * config.vocabularyTerms * lgamma(config.β)
-    val global = Await.result(model.topicCounts.pull((0L until config.topics).toArray), timeout.duration)
-    var i = 0
-    while (i < global.length) {
-      loglikelihood -= lgamma(config.vocabularyTerms * config.β + global(i).toDouble)
-      i += 1
-    }
+    val loglikelihood = docLoglikelihood + wordLoglikelihood
 
     // Compute perplexity
     val perplexity = Math.exp(-loglikelihood / tokenCounts)
@@ -133,7 +132,7 @@ class Evaluation(config: LDAConfig) extends Serializable {
     logger.info(s"Evaluation after iteration ${iteration}")
     logger.info(s"Doc log-likelihood:  ${docLoglikelihood}")
     logger.info(s"Word log-likelihood: ${wordLoglikelihood}")
-    logger.info(s"Norm log-likelihood: ${loglikelihood}")
+    logger.info(s"Log-likelihood:      ${loglikelihood}")
     logger.info(s"Token counts:        ${tokenCounts}")
     logger.info(s"Perplexity:          ${perplexity}")
 

@@ -114,6 +114,13 @@ object Solver {
   private val logger: Logger = Logger(LoggerFactory getLogger s"${getClass.getSimpleName}")
   private val datasetStorageLevel = StorageLevel.DISK_ONLY
 
+  def test(sc: SparkContext, gc: Client, model: LDAModel, samples: RDD[SparseVector[Int]]): Double = {
+    val gibbsSamples = transform(samples, model.config)
+    
+
+    0.0
+  }
+
   /**
     * Trains an LDA model using a metropolis-hastings based algorithm
     *

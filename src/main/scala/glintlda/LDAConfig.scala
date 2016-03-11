@@ -24,7 +24,7 @@ case class LDAConfig(var α: Double = 0.5,
                      var blockSize: Int = 1000,
                      var checkpointRead: String = "",
                      var checkpointSave: String = "",
-                     var seed: Int = 42) {
+                     var seed: Int = 42) extends Serializable {
 
   def setα(α: Double) = this.α = α
   def setβ(β: Double) = this.β = β

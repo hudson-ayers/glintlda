@@ -1,18 +1,19 @@
 package glintlda
 
-import java.io.{PrintWriter, BufferedWriter, File}
+import java.io._
 
 import akka.util.Timeout
-import breeze.io.TextWriter.FileWriter
 import glint.Client
 import glint.iterators.RowBlockIterator
+import glint.models.client.buffered.BufferedBigMatrix
 import glint.models.client.granular.GranularBigMatrix
 import glint.models.client.retry.{RetryBigMatrix, RetryBigVector}
 import glint.models.client.{BigMatrix, BigVector}
 import glint.partitioning.cyclic.CyclicPartitioner
-import glintlda.util.{BoundedPriorityQueue, ranges}
+import glintlda.util.{SimpleLock, BoundedPriorityQueue, ranges}
 
 import scala.concurrent.{Await, ExecutionContext}
+import scala.concurrent.duration._
 
 /**
   * A distributed LDA Model
@@ -68,7 +69,7 @@ class LDAModel(var wordTopicCounts: BigMatrix[Long],
     * @param ec The execution context in which to execute requests to the parameter server
     * @param timeout The timeout of operations to the parameter server
     */
-  def writeToFile(file: File)(implicit ec: ExecutionContext, timeout: Timeout): Unit = {
+  def writeProbabilitiesToCSV(file: File)(implicit ec: ExecutionContext, timeout: Timeout): Unit = {
 
     // Get global counts
     val globalCounts = Await.result(topicCounts.pull((0L until config.topics).toArray), timeout.duration)
@@ -98,6 +99,27 @@ class LDAModel(var wordTopicCounts: BigMatrix[Long],
     writer.close()
   }
 
+  /**
+    * Writes the LDA model to a file so it can be restored later
+    *
+    * @param path The path where to store the binary topic model
+    */
+  def writeToFile(path: String)(implicit ec: ExecutionContext, timeout: Timeout): Unit = {
+    val os = new ObjectOutputStream(new FileOutputStream(path))
+    os.writeObject(config)
+    val globalCounts = Await.result(topicCounts.pull((0L until config.topics).toArray), timeout.duration)
+    os.writeObject(globalCounts)
+    new RowBlockIterator[Long](wordTopicCounts, 10000).foreach {
+      case rowBlock =>
+        var i = 0
+        while (i < rowBlock.length) {
+          os.writeObject(rowBlock(i))
+          i += 1
+        }
+    }
+    os.close()
+  }
+
 }
 
 object LDAModel {
@@ -112,6 +134,51 @@ object LDAModel {
     val granularTopicWordCounts = new GranularBigMatrix[Long](topicWordCounts, 120000)
     val globalCounts = new RetryBigVector[Long](gc.vector[Long](config.topics, 1), 5)
     new LDAModel(new RetryBigMatrix[Long](granularTopicWordCounts, 5), globalCounts, config)
+  }
+
+  /**
+    * Reads an LDA model from a file and stores it on the parameter servers
+    *
+    * @param path Where to load the model from
+    * @return The LDA model
+    */
+  def readFromFile(path: String, gc: Client): LDAModel = {
+
+    // Set up input stream and read config
+    val is = new ObjectInputStream(new FileInputStream(path))
+    val config = is.readObject().asInstanceOf[LDAConfig]
+
+    // Create a model with given configuration
+    val model = LDAModel(gc, config)
+    implicit val ec = ExecutionContext.Implicits.global
+    implicit val timeout = new Timeout(300 seconds)
+
+    // Construct buffer
+    val buffer = new BufferedBigMatrix[Long](model.wordTopicCounts, 1000000)
+
+    // Loop and read data while pushing it to the parameter server
+    val flushLock = new SimpleLock(16)
+    var i = 0L
+    while (i < config.vocabularyTerms) {
+      val row = is.readObject().asInstanceOf[Array[Long]]
+      var j = 0
+      while (j < row.length) {
+        buffer.pushToBuffer(i, j, row(j))
+        if (buffer.isFull) {
+          flushLock.acquire()
+          buffer.flush().onComplete(_ => flushLock.release())
+        }
+        j += 1
+      }
+      i += 1
+    }
+
+    // Wait for all transactions to finish
+    flushLock.acquireAll()
+    flushLock.releaseAll()
+
+    // Return the LDA model
+    model
   }
 
 }
