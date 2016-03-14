@@ -74,6 +74,54 @@ class NaiveSolver(model: LDAModel, id: Int) extends Solver(model, id) {
   }
 
   /**
+    * Runs the LDA inference algorithm on given partition of the data without
+    * updating the word-topic counts
+    *
+    * @param samples The samples to run the algorithm on
+    */
+  override protected def test(samples: Array[GibbsSample]): Unit = {
+
+    // Create random and sampler
+    val random = new FastRNG(model.config.seed + id)
+    val sampler = new Sampler(model.config, random)
+
+    // Don't infer and just test using the sampler
+    sampler.infer = 0
+
+    // Pull global topic counts
+    val global = Await.result(model.topicCounts.pull((0L until model.config.topics).toArray), 300 seconds)
+
+    // Initialize variables used during iteration of model slices
+    var start: Int = 0
+    var end: Int = 0
+    var rowWait = System.currentTimeMillis()
+
+    // Iterate over blocks of rows of the word topic count matrix
+    new RowBlockIterator[Long](model.wordTopicCounts, model.config.blockSize).foreach {
+      case rowBlock =>
+        logger.info(s"Row block wait time: ${System.currentTimeMillis() - rowWait}ms")
+
+        // Reset flush lock time
+        lock.waitTime = 0
+
+        // Perform resampling on just this block of rows from the word topic count matrix
+        end += rowBlock.length
+        logger.info(s"Resampling features [${start}, ..., ${end})")
+
+        // Perform resampling
+        time(logger, "Resampling time: ") {
+          resample(samples, sampler, global, rowBlock, start, end, false)
+        }
+
+        // Increment start index for next block of rows
+        start += rowBlock.length
+        rowWait = System.currentTimeMillis()
+
+    }
+
+  }
+
+  /**
     * Resamples given samples with
     *
     * @param samples The samples
@@ -82,13 +130,15 @@ class NaiveSolver(model: LDAModel, id: Int) extends Solver(model, id) {
     * @param block The block of features
     * @param start The index of the first feature
     * @param end The index of the first non-included feature
+    * @param shouldUpdateModel A boolean indicating whether the resampling should update the model (default: true)
     */
   def resample(samples: Array[GibbsSample],
                sampler: Sampler,
                global: Array[Long],
                block: Array[Vector[Long]],
                start: Int,
-               end: Int) = {
+               end: Int,
+               shouldUpdateModel: Boolean = true) = {
 
     // Create buffer
     val bufferGlobal = new Array[Long](model.config.topics)
@@ -121,21 +171,24 @@ class NaiveSolver(model: LDAModel, id: Int) extends Solver(model, id) {
           // Topic has changed, update the necessary counts
           if (oldTopic != newTopic) {
             sample.topics(j) = newTopic
-            sampler.wordCounts(oldTopic) -= 1
-            sampler.wordCounts(newTopic) += 1
-            sampler.globalCounts(oldTopic) -= 1
-            sampler.globalCounts(newTopic) += 1
             sampler.documentCounts(oldTopic) -= 1
             sampler.documentCounts(newTopic) += 1
 
-            // Add to buffer and flush if necessary
-            buffer.pushToBuffer(feature, oldTopic, -1)
-            flushBufferIfFull(buffer, lock)
-            buffer.pushToBuffer(feature, newTopic, 1)
-            flushBufferIfFull(buffer, lock)
+            if (shouldUpdateModel) {
+              sampler.wordCounts(oldTopic) -= 1
+              sampler.wordCounts(newTopic) += 1
+              sampler.globalCounts(oldTopic) -= 1
+              sampler.globalCounts(newTopic) += 1
 
-            bufferGlobal(oldTopic) -= 1
-            bufferGlobal(newTopic) += 1
+              // Add to buffer and flush if necessary
+              buffer.pushToBuffer(feature, oldTopic, -1)
+              flushBufferIfFull(buffer, lock)
+              buffer.pushToBuffer(feature, newTopic, 1)
+              flushBufferIfFull(buffer, lock)
+
+              bufferGlobal(oldTopic) -= 1
+              bufferGlobal(newTopic) += 1
+            }
           }
         }
 

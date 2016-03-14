@@ -104,6 +104,14 @@ abstract class Solver(model: LDAModel, id: Int) {
     */
   protected def fit(samples: Array[GibbsSample], iteration: Int): Unit
 
+  /**
+    * Runs the LDA inference algorithm on given partition of the data without
+    * updating topic-word counts
+    *
+    * @param samples The samples to run the algorithm on
+    */
+  protected def test(samples: Array[GibbsSample]): Unit
+
 }
 
 /**
@@ -114,11 +122,53 @@ object Solver {
   private val logger: Logger = Logger(LoggerFactory getLogger s"${getClass.getSimpleName}")
   private val datasetStorageLevel = StorageLevel.DISK_ONLY
 
-  def test(sc: SparkContext, gc: Client, model: LDAModel, samples: RDD[SparseVector[Int]]): Double = {
-    val gibbsSamples = transform(samples, model.config)
-    
+  def test(sc: SparkContext, model: LDAModel, samples: RDD[SparseVector[Int]], iterations: Int): Unit = {
 
-    0.0
+    // Execution context and timeouts for asynchronous operations
+    implicit val ec = ExecutionContext.Implicits.global
+    implicit val timeout = new Timeout(60 seconds)
+
+    // Construct evaluation
+    val eval = new Evaluation(model.config)
+
+    // Evaluate
+    val gibbsSamples = transform(samples, model.config)
+    var rdd = gibbsSamples
+    var prevRdd = rdd
+    var prevFuture = Future { }
+    var t = 1
+    while (t <= iterations) {
+
+      rdd = rdd.mapPartitionsWithIndex { case (id, it) =>
+        val s = new MHSolver(model, id).asInstanceOf[Solver]
+        val partitionSamples = it.toArray
+        s.test(partitionSamples)
+        partitionSamples.toIterator
+      }.persist(datasetStorageLevel)
+
+      // Compute document-specific evaluations
+      val (documentLogLikelihood, tokenCounts) = try {
+        rdd.aggregate[(Double, Long)]((0.0, 0L))(eval.aggregateDocument, eval.aggregateResults)
+      } catch {
+        case e: Exception => (0.0, 0L)
+      }
+
+      // Compute log likelihood and perplexity
+      prevFuture = Future {
+        val iteration = t
+        eval.logCurrentState(iteration, documentLogLikelihood, tokenCounts, model)
+      }
+
+      // Unpersist previous RDD
+      prevRdd.unpersist()
+      prevRdd = rdd
+
+      // Go to next iteration
+      t += 1
+    }
+
+    // Wait for final evaluation to finish
+    Await.result(prevFuture, 300 seconds)
   }
 
   /**
