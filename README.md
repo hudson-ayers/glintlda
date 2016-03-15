@@ -1,5 +1,5 @@
 # Glint LDA
-Scalable Distributed LDA implementation for Spark & Glint
+Scalable Distributed LDA implementation for [Spark](http://spark.apache.org/) & [Glint](https://github.com/rjagerman/glint)
 
 This implementation is based on [LightLDA](https://github.com/Microsoft/lightlda).
 
