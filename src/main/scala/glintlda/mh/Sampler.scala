@@ -42,8 +42,11 @@ class Sampler(config: LDAConfig, mhSteps: Int = 2, random: FastRNG) {
     // Each Metropolis-Hastings step alternates between a word proposal and doc proposal
     while(mh < mhSteps) {
 
+      // Set t
+      var t: Int = s
+
       // Word Proposal
-      var t: Int = aliasTable.draw(random)
+      t = aliasTable.draw(random)
       if (t != s) {
         var docS = documentCounts(s) + α
         var docT = documentCounts(t) + α
@@ -67,7 +70,7 @@ class Sampler(config: LDAConfig, mhSteps: Int = 2, random: FastRNG) {
         }
 
         val pi = (docT * wordT * globalS * proposalS) / (docS * wordS * globalT * proposalT)
-        if (random.coinflip(pi)) {
+        if (random.nextDouble() < pi) {
           s = t
         }
       }
@@ -80,7 +83,6 @@ class Sampler(config: LDAConfig, mhSteps: Int = 2, random: FastRNG) {
         t = random.nextPositiveInt() % config.topics
       }
       if (t != s) {
-        val rejection = random.nextDouble()
         var docS = documentCounts(s) + α
         var docT = documentCounts(t) + α
         var wordS = wordCounts(s) + β
@@ -103,10 +105,11 @@ class Sampler(config: LDAConfig, mhSteps: Int = 2, random: FastRNG) {
         }
 
         val pi = (docT * wordT * globalS * proposalS) / (docS * wordS * globalT * proposalT)
-        if (rejection < pi) {
+        if (random.nextDouble() < pi) {
           s = t
         }
       }
+
       mh += 1
     }
     s

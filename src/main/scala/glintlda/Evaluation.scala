@@ -35,7 +35,7 @@ class Evaluation(config: LDAConfig) extends Serializable {
     localDocLikelihood -= lgamma(config.α * config.topics + sample.features.length)
     val sparseCounts = sample.sparseCounts(config.topics)
     var offset = 0
-    while( offset < sparseCounts.activeSize) {
+    while (offset < sparseCounts.activeSize) {
       val value: Int = sparseCounts.valueAt(offset)
       localDocLikelihood += lgamma(config.α + value)
       offset += 1
@@ -79,12 +79,8 @@ class Evaluation(config: LDAConfig) extends Serializable {
         while (i < rowBlock.length) {
           var j = 0
           while (j < rowBlock(i).length) {
-            if(rowBlock(i)(j) < 0) {
-              println(s"Error: word topic counts at (${start + i}, $j): ${rowBlock(i)(j)} < 0")
-              wordLikelihood += lgamma(config.β)
-            } else {
-              wordLikelihood += lgamma(config.β + rowBlock(i)(j).toDouble)
-            }
+            wordLikelihood += lgamma(config.β + rowBlock(i)(j).toDouble)
+            wordLikelihood -= lgamma(config.β)
             j += 1
           }
           i += 1
@@ -93,11 +89,10 @@ class Evaluation(config: LDAConfig) extends Serializable {
     }
 
     // Normalize
-    wordLikelihood += config.topics * lgamma(config.vocabularyTerms * config.β)
-    wordLikelihood -= config.topics * config.vocabularyTerms * lgamma(config.β)
     val global = Await.result(model.topicCounts.pull((0L until config.topics).toArray), timeout.duration)
     var i = 0
     while (i < global.length) {
+      wordLikelihood += lgamma(config.vocabularyTerms * config.β)
       wordLikelihood -= lgamma(config.vocabularyTerms * config.β + global(i).toDouble)
       i += 1
     }

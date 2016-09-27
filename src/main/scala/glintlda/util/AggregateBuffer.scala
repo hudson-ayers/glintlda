@@ -15,7 +15,7 @@ import scala.concurrent.{ExecutionContext, Future}
   */
 class AggregateBuffer(val cutoff: Int, config: LDAConfig) {
 
-  val size: Int = cutoff * config.topics
+  val size: Int = Math.min(cutoff, config.vocabularyTerms) * config.topics
   val buffer = new Array[Long](size)
 
   /**

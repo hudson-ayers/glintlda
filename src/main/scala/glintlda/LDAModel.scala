@@ -11,6 +11,7 @@ import glint.models.client.retry.{RetryBigMatrix, RetryBigVector}
 import glint.models.client.{BigMatrix, BigVector}
 import glint.partitioning.cyclic.CyclicPartitioner
 import glintlda.util.{SimpleLock, BoundedPriorityQueue, ranges}
+import org.apache.spark.mllib.clustering.LocalLDAModel
 
 import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration._
@@ -134,6 +135,45 @@ object LDAModel {
     val granularTopicWordCounts = new GranularBigMatrix[Long](topicWordCounts, 120000)
     val globalCounts = new RetryBigVector[Long](gc.vector[Long](config.topics, 1), 5)
     new LDAModel(new RetryBigMatrix[Long](granularTopicWordCounts, 5), globalCounts, config)
+  }
+
+  /**
+    * Converts a Spark LocalLDAModel to a glint model
+    * @param sparkModel The spark model
+    * @param gc The glint client
+    * @param config The configuration
+    * @return The glint model
+    */
+  def fromSpark(sparkModel: LocalLDAModel, gc: Client, config: LDAConfig): LDAModel = {
+    implicit val ec = ExecutionContext.Implicits.global
+    implicit val timeout = new Timeout(300 seconds)
+
+    val model = apply(gc, config)
+    val buff = new BufferedBigMatrix[Long](model.wordTopicCounts, 100000)
+    val globs = new Array[Long](config.topics)
+    var i = 0
+    val lock = new SimpleLock(16)
+    while (i < sparkModel.topicsMatrix.numRows) {
+      var j = 0
+      while (j < sparkModel.topicsMatrix.numCols) {
+        val value = sparkModel.topicsMatrix(i, j).toLong
+        buff.pushToBuffer(i, j, value)
+        if (buff.isFull) {
+          lock.acquire()
+          buff.flush().onComplete(_ => lock.release())
+        }
+        globs(j) += value
+        j += 1
+      }
+      i += 1
+    }
+    lock.acquire()
+    buff.flush().onComplete(_ => lock.release())
+    lock.acquire()
+    model.topicCounts.push((0L until config.topics).toArray, globs).onComplete(_ => lock.release())
+    lock.acquireAll()
+    lock.releaseAll()
+    model
   }
 
   /**

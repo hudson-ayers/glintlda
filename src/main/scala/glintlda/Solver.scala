@@ -10,6 +10,7 @@ import glint.models.client.buffered.BufferedBigMatrix
 import glintlda.mh.MHSolver
 import glintlda.naive.NaiveSolver
 import glintlda.util.{AggregateBuffer, FastRNG, SimpleLock, RDDImprovements}
+import org.apache.hadoop.fs.{Path, FileSystem}
 import org.apache.spark.{SparkException, Success, SparkContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler._
@@ -122,7 +123,7 @@ object Solver {
   private val logger: Logger = Logger(LoggerFactory getLogger s"${getClass.getSimpleName}")
   private val datasetStorageLevel = StorageLevel.DISK_ONLY
 
-  def test(sc: SparkContext, model: LDAModel, samples: RDD[SparseVector[Int]], iterations: Int): Unit = {
+  def test(sc: SparkContext, gc: Client, model: LDAModel, samples: RDD[SparseVector[Int]], iterations: Int): Unit = {
 
     // Execution context and timeouts for asynchronous operations
     implicit val ec = ExecutionContext.Implicits.global
@@ -153,10 +154,17 @@ object Solver {
         case e: Exception => (0.0, 0L)
       }
 
+      // Build count table for rdd
+      val countModel = build(gc, model.config, rdd, (m, i) => new MHSolver(m, i))
+
       // Compute log likelihood and perplexity
       prevFuture = Future {
         val iteration = t
-        eval.logCurrentState(iteration, documentLogLikelihood, tokenCounts, model)
+        eval.logCurrentState(iteration, documentLogLikelihood, tokenCounts, countModel)
+
+        // Free up space by destroying the count model
+        countModel.wordTopicCounts.destroy()
+        countModel.topicCounts.destroy()
       }
 
       // Unpersist previous RDD
@@ -219,6 +227,10 @@ object Solver {
       sc.objectFile[GibbsSample](config.checkpointRead)
     }
 
+    // Set checkpoint directory
+    if (!config.checkpointSave.isEmpty) {
+      sc.setCheckpointDir(config.checkpointSave)
+    }
 
     // Execution context and timeouts for asynchronous operations
     implicit val ec = ExecutionContext.Implicits.global
@@ -246,6 +258,7 @@ object Solver {
     var rdd = gibbsSamples
     var prevRdd = gibbsSamples
     var prevFuture: Future[Unit] = Future {}
+    var lastCheckpointIteration: Int = 0
     var t = 1
     while (t <= config.iterations) {
 
@@ -259,6 +272,13 @@ object Solver {
         partitionSamples.toIterator
       }.persist(datasetStorageLevel)
 
+      // Perform checkpointing
+      if (!config.checkpointSave.isEmpty) {
+        if (t % config.checkpointEvery == 0) {
+          rdd.checkpoint()
+        }
+      }
+
       // Compute evaluation
       val (documentLogLikelihood, tokenCounts) = try {
         rdd.aggregate[(Double, Long)]((0.0, 0L))(eval.aggregateDocument, eval.aggregateResults)
@@ -270,29 +290,27 @@ object Solver {
 
       if (rebuildCountTable.get()) {
 
-        // Something went wrong, unpersist current RDD and reset it to the previous iteration's RDD
+        // Something went wrong, remove the current RDD and reset it to the previous iteration's RDD
         logger.warn(s"Iteration $t failed: rebuilding count table from samples and restarting iteration")
-        rdd.unpersist()
+        removeRdd(rdd, sc)
         rdd = prevRdd
 
-        // Store previous data set if we have a checkpoint save location
-        // If failures keep happening we can always recover from this checkpoint
-        if (!config.checkpointSave.isEmpty) {
-          try {
-            rdd.saveAsObjectFile(config.checkpointSave)
-          } catch {
-            case e: Exception => logger.warn(s"Unable to store checkpoint file (${e.getMessage})\n${e.getStackTraceString}")
-          }
-        }
-
-        // Rebuild count table after evaluation has finished
+        // Rebuild count table after evaluation to restore valid state on the parameter servers
         Await.result(prevFuture, Duration.Inf)
         model.wordTopicCounts.destroy()
         model.topicCounts.destroy()
         model = build(gc, config, rdd, solver)
         rebuildCountTable.set(false)
+        t = lastCheckpointIteration + 1
 
       } else {
+
+        // Checkpoint was successfully computed, store the iteration number
+        if (!config.checkpointSave.isEmpty) {
+          if (t % config.checkpointEvery == 0) {
+            lastCheckpointIteration = t
+          }
+        }
 
         // Nothing went wrong, compute evaluation as normal and continue
         prevFuture = Future {
@@ -300,8 +318,8 @@ object Solver {
           eval.logCurrentState(iteration, documentLogLikelihood, tokenCounts, model)
         }
 
-        // Unpersist previous RDD
-        prevRdd.unpersist()
+        // Unpersist previous RDD and delete old checkpointed data
+        removeRdd(prevRdd, sc)
         prevRdd = rdd
 
         // Go to next iteration
@@ -316,6 +334,25 @@ object Solver {
 
     // Return trained model
     model
+  }
+
+  /**
+    * Removes the old RDD and associated checkpoint data
+    *
+    * @param oldRdd The old RDD
+    * @param sc The spark context (needed for deleting checkpoint data)
+    */
+  private def removeRdd(oldRdd: RDD[GibbsSample], sc: SparkContext): Unit = {
+    if (oldRdd.isCheckpointed) {
+      try {
+        oldRdd.getCheckpointFile.foreach {
+          case s => FileSystem.get(sc.hadoopConfiguration).delete(new Path(s), true)
+        }
+      } catch {
+        case e: Exception => logger.error(s"Checkpoint deletion error: ${e.getMessage}\n${e.getStackTraceString}")
+      }
+    }
+    oldRdd.unpersist()
   }
 
   /**

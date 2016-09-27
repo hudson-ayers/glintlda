@@ -81,7 +81,7 @@ class AliasTable(alias: Array[Int], prob: Array[Double]) {
   def draw(random: FastRNG): Int = {
     count += 1
     val i = random.nextPositiveInt() % alias.length
-    if (random.coinflip(prob(i))) {
+    if (random.nextDouble() < prob(i)) {
       i
     } else {
       alias(i)
